@@ -1,42 +1,73 @@
-import machine
+from machine import Pin, ADC
 import time
 import urequests
-import network
+from dht import DHT11
+from math import log10
 
-ssid = 'Baler Net'
-password = 'NetValoNa69'
+adc_pin = 34
+load_resistor = 10000
+adc_max = 4095
+vin = 5
+ro_clean_air = 10000
+adc = ADC(Pin(adc_pin))
+adc.atten(ADC.ATTN_11DB)
+adc.width(ADC.WIDTH_12BIT)
 
-# Connect to Wi-Fi
-wlan = network.WLAN(network.STA_IF)
-wlan.active(True)
-wlan.connect(ssid, password)
-while not wlan.isconnected():
-    print("Connecting to Wi-Fi...")
-    time.sleep(.2)
 
-print("Connected to Wi-Fi:", wlan.ifconfig())
+ir_pin = Pin(25, Pin.IN)
+dht_pin = 18
+d= DHT11(Pin(dht_pin))
 
-ir_pin = machine.Pin(25, machine.Pin.IN)
+
+def read_voltage():
+    adc_value = adc.read()
+    voltage = adc_value * 3.3 / adc_max
+    return voltage
+
+def calculate_rs(voltage):
+    if voltage == 0:
+        return 1e9 
+    return load_resistor * (vin - voltage) / voltage
+
+def get_ppm(rs_ro_ratio):
+    try: 
+        ratio_log = log10(rs_ro_ratio)
+        log_ppm = -0.48 * ratio_log + 0.78
+        ppm = 10 ** log_ppm
+        return ppm
+    except:
+        return -1  # error condition
+
+def get_dht_data():
+    d.measure()
+    temperature = d.temperature()
+    humidity = d.humidity()
+
+    return temperature, humidity
+
 
 while True:
     ir_value = ir_pin.value()
 
-    ir_data = {'sensorData': 1,'objectDetected': False}
+    voltage = read_voltage()
+    rs = calculate_rs(voltage)
+    rs_ro_ratio = rs / ro_clean_air
+    ppm = get_ppm(rs_ro_ratio)
 
-    if ir_value == 0:
-        print("IR signal detected")
-        ir_data['sensorData'] = 0
-        ir_data['objectDetected'] = True
-    else:
-        print("No IR signal detected")
-        ir_data['sensorData'] = 1
-        ir_data['objectDetected'] = False
+    temperature, humidity = get_dht_data()
+
+    sensor_data ={
+        "flameRead": ir_value,
+        "tempRead": temperature,
+        "humidity":humidity,
+        "gasRead":ppm,
+    }
 
     try:
-        response = urequests.post("http://192.168.0.249:3000/api/irData", json=ir_data)
+        response = urequests.post("http://<backend_api:port>/api/irData", json=sensor_data)
         print("Response:", response.text)
         response.close()
     except Exception as e:
         print("Error sending request:", e)
 
-    time.sleep(1)
+    time.sleep(.5)
